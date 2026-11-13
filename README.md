@@ -2,7 +2,7 @@
 
 Local-first desktop workspace for planning, designing, versioning, and automating Instagram campaigns — built with **Go**, **Wails 3**, **Svelte + TypeScript**, **Fabric.js**, **SQLite**, local **AI CLI** integration, and a planned **Android ADB** publishing bridge.
 
-> **Status:** Repository foundation (`0.0.0-dev`). Architecture, requirements, and roadmap are defined locally; application scaffold starts in phase **R0**. No application binaries or automated ADB/Instagram publishing are implemented in this repository yet.
+> **Status:** Milestone **R0** (`0.0.0-dev`) — native **Wails 3** + **Svelte 5** + **Fabric.js 7** + **SQLite** canvas editor scaffold with versioned revisions, undo/redo history, and verified `1080×1350` PNG/JPG export. Future milestones (**R1–R8**) cover full campaign planning, Codex CLI orchestration, and optional Android ADB automation.
 
 ---
 
@@ -48,12 +48,24 @@ Architectural boundaries follow pragmatic Clean Architecture: domain rules and u
 
 ---
 
-## Repository Checks
+## Build & Checks
 
-At the current foundation stage, repository checks verify repository hygiene and baseline metadata:
+Core checks (repo hygiene, `gofmt`, `tsc --noEmit`, Vite build, Vitest, Go `vet` and `-race` tests on domain/sqlite/assets/editor):
 
 ```bash
-make check
+make check-core
+```
+
+Native Linux build & full test suite (requires `libgtk-4-dev` and `libwebkitgtk-6.0-dev` on Ubuntu 24.04):
+
+```bash
+make check-native build
+```
+
+Alternative GTK3/WebKit2GTK 4.1 fallback targets (when `gtk+-3.0` and `webkit2gtk-4.1` headers are used):
+
+```bash
+make check-gtk3 build-gtk3
 ```
 
 Local Git hooks (optional, recommended for contributors):
@@ -61,8 +73,6 @@ Local Git hooks (optional, recommended for contributors):
 ```bash
 git config core.hooksPath .githooks
 ```
-
-Full Go (`go vet`, `go test`, `staticcheck`) and Svelte (`tsc`, `eslint`, `vitest`, `vite build`) CI gates will be enabled alongside the **R0** scaffold.
 
 ---
 
