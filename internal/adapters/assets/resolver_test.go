@@ -36,4 +36,28 @@ func TestResolverServesMappedAssetAndRejectsUnmapped(t *testing.T) {
 	if badRec.Code != http.StatusNotFound {
 		t.Fatalf("expected 404 for unmapped path, got %d", badRec.Code)
 	}
+
+	libDir := t.TempDir()
+	imgPath := filepath.Join(libDir, "artes-unicas", "timeline", "01-marca-01.jpg")
+	if err := os.MkdirAll(filepath.Dir(imgPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(imgPath, []byte("jpg-test"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	res.SetLibraryDir(libDir)
+
+	libOk := httptest.NewRequest(http.MethodGet, "/library-assets/artes-unicas/timeline/01-marca-01.jpg", nil)
+	libOkRec := httptest.NewRecorder()
+	handler.ServeHTTP(libOkRec, libOk)
+	if libOkRec.Code != http.StatusOK || libOkRec.Body.String() != "jpg-test" {
+		t.Fatalf("expected 200 from library-assets, got %d", libOkRec.Code)
+	}
+
+	libBad := httptest.NewRequest(http.MethodGet, "/library-assets/../../etc/passwd", nil)
+	libBadRec := httptest.NewRecorder()
+	handler.ServeHTTP(libBadRec, libBad)
+	if libBadRec.Code != http.StatusNotFound {
+		t.Fatalf("expected 404 for traversal in library-assets, got %d", libBadRec.Code)
+	}
 }

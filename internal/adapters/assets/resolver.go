@@ -17,9 +17,11 @@ var CreativeAssetsMap = map[string]string{
 	"reference/02-combo-02.jpg": "03-banners-prontos/timeline/02-combo/02-combo-02.jpg",
 }
 
-// Resolver maps /creative-assets/* HTTP requests safely to files under baseDir.
+// Resolver maps /creative-assets/* (read-only creative base) and /library-assets/*
+// (managed portable library) HTTP requests safely to local files.
 type Resolver struct {
-	baseDir string
+	baseDir    string
+	libraryDir string
 }
 
 // NewResolver creates a read-only asset resolver rooted at baseDir.
@@ -27,9 +29,23 @@ func NewResolver(baseDir string) *Resolver {
 	return &Resolver{baseDir: filepath.Clean(baseDir)}
 }
 
+// SetLibraryDir configures the managed portable library root served at /library-assets/.
+func (r *Resolver) SetLibraryDir(libraryDir string) {
+	if strings.TrimSpace(libraryDir) == "" {
+		r.libraryDir = ""
+		return
+	}
+	r.libraryDir = filepath.Clean(libraryDir)
+}
+
 // BaseDir returns the configured creative base directory.
 func (r *Resolver) BaseDir() string {
 	return r.baseDir
+}
+
+// SetBaseDir updates the read-only creative base directory.
+func (r *Resolver) SetBaseDir(baseDir string) {
+	r.baseDir = filepath.Clean(baseDir)
 }
 
 // BaseExists checks whether the configured creative base directory is present.
@@ -57,26 +73,58 @@ func (r *Resolver) ResolvePath(key string) (string, bool) {
 	return full, true
 }
 
-// ServeHTTP serves mapped creative assets under /creative-assets/ and delegates
-// all other paths to next if non-nil.
+// ResolveLibraryPath returns the validated filesystem path for a relative path inside libraryDir.
+func (r *Resolver) ResolveLibraryPath(rel string) (string, bool) {
+	if r.libraryDir == "" {
+		return "", false
+	}
+	cleanedRel := filepath.Clean(filepath.FromSlash(strings.TrimPrefix(rel, "/")))
+	if cleanedRel == "." || cleanedRel == ".." || strings.HasPrefix(cleanedRel, ".."+string(filepath.Separator)) || filepath.IsAbs(cleanedRel) {
+		return "", false
+	}
+	full := filepath.Clean(filepath.Join(r.libraryDir, cleanedRel))
+	if !strings.HasPrefix(full, r.libraryDir+string(filepath.Separator)) {
+		return "", false
+	}
+	info, err := os.Stat(full)
+	if err != nil || info.IsDir() {
+		return "", false
+	}
+	return full, true
+}
+
+// Middleware serves mapped creative assets under /creative-assets/ and managed
+// library files under /library-assets/, delegating all other paths to next.
 func (r *Resolver) Middleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
-		const prefix = "/creative-assets/"
-		if !strings.HasPrefix(req.URL.Path, prefix) {
+		const creativePrefix = "/creative-assets/"
+		const libraryPrefix = "/library-assets/"
+
+		switch {
+		case strings.HasPrefix(req.URL.Path, creativePrefix):
+			key := strings.TrimPrefix(req.URL.Path, creativePrefix)
+			full, ok := r.ResolvePath(key)
+			if !ok {
+				http.NotFound(w, req)
+				return
+			}
+			w.Header().Set("Cache-Control", "no-store")
+			http.ServeFile(w, req, full)
+		case strings.HasPrefix(req.URL.Path, libraryPrefix):
+			key := strings.TrimPrefix(req.URL.Path, libraryPrefix)
+			full, ok := r.ResolveLibraryPath(key)
+			if !ok {
+				http.NotFound(w, req)
+				return
+			}
+			w.Header().Set("Cache-Control", "no-store")
+			http.ServeFile(w, req, full)
+		default:
 			if next != nil {
 				next.ServeHTTP(w, req)
 				return
 			}
 			http.NotFound(w, req)
-			return
 		}
-		key := strings.TrimPrefix(req.URL.Path, prefix)
-		full, ok := r.ResolvePath(key)
-		if !ok {
-			http.NotFound(w, req)
-			return
-		}
-		w.Header().Set("Cache-Control", "no-store")
-		http.ServeFile(w, req, full)
 	})
 }
