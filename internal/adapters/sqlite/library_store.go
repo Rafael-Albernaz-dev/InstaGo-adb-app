@@ -392,6 +392,67 @@ func (s *Store) ListDatedOffers(ctx context.Context, companyID string) ([]librar
 	return items, rows.Err()
 }
 
+// GetDatedOffer fetches a single read-only offer by ID, returning nil if not found.
+func (s *Store) GetDatedOffer(ctx context.Context, offerID string) (*library.DatedOffer, error) {
+	if strings.TrimSpace(offerID) == "" {
+		return nil, nil
+	}
+	var o library.DatedOffer
+	var ro int
+	err := s.db.QueryRowContext(ctx, `
+		SELECT
+			id, company_id, category, title, promo_price_cents, promo_period,
+			after_price_cents, install_fee_cents, speed_summary, services_summary,
+			restrictions, campaign_name, valid_until, checked_at, source_ref, read_only
+		FROM dated_offers
+		WHERE id = ?
+	`, offerID).Scan(
+		&o.ID, &o.CompanyID, &o.Category, &o.Title, &o.PromoPriceCents, &o.PromoPeriod,
+		&o.AfterPriceCents, &o.InstallFeeCents, &o.SpeedSummary, &o.ServicesSummary,
+		&o.Restrictions, &o.CampaignName, &o.ValidUntil, &o.CheckedAt, &o.SourceRef, &ro,
+	)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("query dated_offer %s: %w", offerID, err)
+	}
+	o.ReadOnly = ro != 0
+	return &o, nil
+}
+
+// UpsertLibraryAsset inserts or updates a single user-imported asset inside library_assets.
+func (s *Store) UpsertLibraryAsset(ctx context.Context, a library.LibraryAsset) error {
+	_, err := s.db.ExecContext(ctx, `
+		INSERT INTO library_assets (
+			id, company_id, rel_path, thumb_rel_path, source_rel_path,
+			file_name, mime_type, media_kind, classification, sub_category,
+			format, title, caption, piece_id, page_number, width, height, bytes,
+			sha256, is_unique_approved, is_editable_model, linked_document_id,
+			metadata_json, imported_at
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(id) DO UPDATE SET
+			rel_path = excluded.rel_path,
+			thumb_rel_path = excluded.thumb_rel_path,
+			title = excluded.title,
+			width = excluded.width,
+			height = excluded.height,
+			bytes = excluded.bytes,
+			sha256 = excluded.sha256,
+			imported_at = excluded.imported_at
+	`,
+		a.ID, a.CompanyID, a.RelPath, a.ThumbRelPath, a.SourceRelPath,
+		a.FileName, a.MimeType, a.MediaKind, a.Classification, a.SubCategory,
+		a.Format, a.Title, a.Caption, a.PieceID, a.PageNumber, a.Width, a.Height, a.Bytes,
+		a.SHA256, boolToInt(a.IsUniqueApproved), boolToInt(a.IsEditableModel), a.LinkedDocumentID,
+		a.MetadataJSON, a.ImportedAt,
+	)
+	if err != nil {
+		return fmt.Errorf("upsert library_asset %s: %w", a.ID, err)
+	}
+	return nil
+}
+
 // ListPublicationHistory returns read-only historical publication records.
 func (s *Store) ListPublicationHistory(ctx context.Context, companyID string) ([]library.PublicationHistoryItem, error) {
 	rows, err := s.db.QueryContext(ctx, `

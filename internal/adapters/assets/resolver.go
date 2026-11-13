@@ -14,6 +14,10 @@ var CreativeAssetsMap = map[string]string{
 	"fonts/inter.woff2":         "02-identidade/fontes/inter.woff2",
 	"logo/rural-conecta.png":    "02-identidade/logos/rural-conecta/logo.png",
 	"photo/p-combo-casa.png":    "05-biblioteca/imagens/timeline/p-combo-casa.png",
+	"photo/p-fibra-planos.png":  "05-biblioteca/imagens/timeline/p-fibra-planos.png",
+	"photo/familia.png":         "05-biblioteca/imagens/timeline/familia.png",
+	"photo/s-combo-familia.png": "05-biblioteca/imagens/stories/s-combo-familia.png",
+	"photo/p-marca-contato.png": "05-biblioteca/imagens/timeline/p-marca-contato.png",
 	"reference/02-combo-02.jpg": "03-banners-prontos/timeline/02-combo/02-combo-02.jpg",
 }
 

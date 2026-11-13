@@ -14,8 +14,11 @@ func NewV5ComboPage2Document() document.Document {
 	return document.Document{
 		ID:                RepresentativeV5ComboID,
 		SchemaVersion:     1,
+		Kind:              "piece",
+		PieceType:         "feed_single",
 		Title:             "Combo Completo — 100 megas na Black Friday (V5 02/04)",
 		CompanyID:         "rural-conecta",
+		OfferID:           "offer-combo-combo-completo",
 		OfferRef:          "OFERTAS-APROVADAS-2026-11-11#combo-completo",
 		Format:            document.FormatFeed,
 		WorkspaceWidth:    600,
@@ -26,6 +29,10 @@ func NewV5ComboPage2Document() document.Document {
 		ReferenceImageURL: "/creative-assets/reference/02-combo-02.jpg",
 		Revision:          1,
 		Status:            "draft",
+		Caption:           "Combo Completo Black Friday: 100 megas fibra (ou 25 megas rádio) + RuralTV + 1 câmera com alarme por R$ 99,99/mês nos 3 primeiros meses.\n\nDepois R$ 199,90/mês · Instalação R$ 249,90 · Consulte cobertura na sua região.\n\nFale com nossa equipe pelo WhatsApp (38) 99740-2599 ou no link da bio.",
+		CTAText:           "Quero meu combo • WhatsApp",
+		CTADestination:    "https://wa.me/5538997402599",
+		NativeInstruction: "Botão desenhado na imagem não é clicável no Feed. Orientar clique no link da bio / WhatsApp (38) 99740-2599.",
 		Pages: []document.Page{
 			{
 				ID:         "page-02",

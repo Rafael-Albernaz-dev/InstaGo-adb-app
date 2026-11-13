@@ -7,12 +7,14 @@ import (
 	"database/sql"
 	"encoding/base64"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"image"
 	_ "image/jpeg"
 	_ "image/png"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strconv"
@@ -23,6 +25,7 @@ import (
 
 	"github.com/Rafael-Albernaz-dev/InstaGo-adb-app/internal/adapters/sqlite"
 	"github.com/Rafael-Albernaz-dev/InstaGo-adb-app/internal/domain/document"
+	"github.com/Rafael-Albernaz-dev/InstaGo-adb-app/internal/domain/library"
 	"github.com/Rafael-Albernaz-dev/InstaGo-adb-app/internal/domain/seed"
 )
 
@@ -50,12 +53,34 @@ type ExportRequest struct {
 	FileName   string `json:"fileName,omitempty"`
 }
 
+// ExportBundlePage carries one rendered page inside a sequence/carousel export.
+type ExportBundlePage struct {
+	PageIndex  int    `json:"pageIndex"`
+	Title      string `json:"title"`
+	DataBase64 string `json:"dataBase64"`
+}
+
+// ExportBundleRequest exports all pages of a document into a numbered folder with caption + manifest.
+type ExportBundleRequest struct {
+	DocumentID string             `json:"documentId"`
+	Format     string             `json:"format"` // png | jpg
+	Pages      []ExportBundlePage `json:"pages"`
+}
+
+// ApproveResult reports approval outcome and any detected offer price/condition issues.
+type ApproveResult struct {
+	Approved   bool                      `json:"approved"`
+	Document   document.Document         `json:"document,omitempty"`
+	OfferCheck document.OfferCheckResult `json:"offerCheck"`
+}
+
 // Service coordinates document persistence, seed initialization, and verified raster export.
 type Service struct {
 	store           *sqlite.Store
 	creativeBaseDir string
 	creativeBaseOK  func() bool
 	exportsDir      string
+	libraryDir      string
 	appVersion      string
 }
 
@@ -68,6 +93,11 @@ func NewService(store *sqlite.Store, creativeBaseDir string, creativeBaseOK func
 		exportsDir:      exportsDir,
 		appVersion:      appVersion,
 	}
+}
+
+// SetLibraryDir configures the managed library directory used when importing images from the editor.
+func (s *Service) SetLibraryDir(libraryDir string) {
+	s.libraryDir = filepath.Clean(libraryDir)
 }
 
 // GetWorkspaceInfo returns current workspace paths and process memory baseline.
@@ -119,12 +149,353 @@ func (s *Service) ListDocuments(ctx context.Context) ([]document.Document, error
 	return s.store.ListDocuments(ctx)
 }
 
-// SaveDocument validates and saves an updated editable document as a new revision.
+// EnsureStarterDocuments creates the Feed representative piece plus Story and Carousel starter templates
+// on first launch without overwriting existing edits.
+func (s *Service) EnsureStarterDocuments(ctx context.Context) ([]document.Document, error) {
+	if _, err := s.EnsureSeedDocument(ctx); err != nil {
+		return nil, err
+	}
+	starters := []struct {
+		doc  document.Document
+		note string
+	}{
+		{doc: seed.NewStoryStarterTemplate(), note: "template: Story Rural Conecta inicial"},
+		{doc: seed.NewCarouselStarterTemplate(), note: "template: Carrossel Rural Conecta inicial"},
+	}
+	for _, st := range starters {
+		if _, err := s.store.GetDocument(ctx, st.doc.ID); errors.Is(err, sql.ErrNoRows) {
+			if _, saveErr := s.store.SaveDocument(ctx, st.doc, st.note); saveErr != nil {
+				return nil, saveErr
+			}
+		} else if err != nil {
+			return nil, err
+		}
+	}
+	return s.store.ListDocuments(ctx)
+}
+
+// CreatePieceFromTemplate clones one of the starter templates (or a blank artboard) into a fresh piece.
+func (s *Service) CreatePieceFromTemplate(ctx context.Context, templateKind string, offerID string, customTitle string) (document.Document, error) {
+	var doc document.Document
+	suffix := uuid.NewString()[:8]
+
+	switch strings.ToLower(strings.TrimSpace(templateKind)) {
+	case "feed", "feed_single":
+		doc = seed.NewV5ComboPage2Document()
+		doc.ID = "piece-feed-" + suffix
+		doc.Title = "Nova arte Feed (" + suffix + ")"
+		doc.Kind = "piece"
+		doc.PieceType = "feed_single"
+	case "story":
+		doc = seed.NewStoryStarterTemplate()
+		doc.ID = "piece-story-" + suffix
+		doc.Title = "Novo Story (" + suffix + ")"
+		doc.Kind = "piece"
+		doc.PieceType = "story"
+	case "carousel":
+		doc = seed.NewCarouselStarterTemplate()
+		doc.ID = "piece-carousel-" + suffix
+		doc.Title = "Novo Carrossel (" + suffix + ")"
+		doc.Kind = "piece"
+		doc.PieceType = "carousel"
+	case "blank_story":
+		wsW, wsH, expW, expH, scale, _ := document.PresetDimensions(document.FormatStory)
+		doc = document.Document{
+			ID:              "piece-story-" + suffix,
+			SchemaVersion:   1,
+			Kind:            "piece",
+			PieceType:       "story",
+			Title:           "Story em branco (" + suffix + ")",
+			CompanyID:       library.DefaultCompanyID,
+			Format:          document.FormatStory,
+			WorkspaceWidth:  wsW,
+			WorkspaceHeight: wsH,
+			ExportWidth:     expW,
+			ExportHeight:    expH,
+			ExportScale:     scale,
+			Revision:        1,
+			Status:          "draft",
+			Pages: []document.Page{
+				{
+					ID:         "page-" + suffix + "-1",
+					Index:      0,
+					Title:      "Página 01",
+					Background: "#F6F7EE",
+					Layers:     []document.Layer{},
+				},
+			},
+		}
+	case "blank_feed":
+		fallthrough
+	default:
+		wsW, wsH, expW, expH, scale, _ := document.PresetDimensions(document.FormatFeed)
+		doc = document.Document{
+			ID:              "piece-feed-" + suffix,
+			SchemaVersion:   1,
+			Kind:            "piece",
+			PieceType:       "feed_single",
+			Title:           "Arte Feed em branco (" + suffix + ")",
+			CompanyID:       library.DefaultCompanyID,
+			Format:          document.FormatFeed,
+			WorkspaceWidth:  wsW,
+			WorkspaceHeight: wsH,
+			ExportWidth:     expW,
+			ExportHeight:    expH,
+			ExportScale:     scale,
+			Revision:        1,
+			Status:          "draft",
+			Pages: []document.Page{
+				{
+					ID:         "page-" + suffix + "-1",
+					Index:      0,
+					Title:      "Página 01",
+					Background: "#F6F7EE",
+					Layers:     []document.Layer{},
+				},
+			},
+		}
+	}
+
+	if t := strings.TrimSpace(customTitle); t != "" {
+		doc.Title = t
+	}
+	if strings.TrimSpace(offerID) != "" {
+		doc.OfferID = strings.TrimSpace(offerID)
+		if offer, err := s.store.GetDatedOffer(ctx, doc.OfferID); err == nil && offer != nil {
+			doc.OfferRef = offer.SourceRef + "#" + offer.ID
+		}
+	}
+	doc.Revision = 1
+	doc.ApprovedRevision = 0
+	doc.Status = "draft"
+	doc = clonePagesFreshIDs(doc, suffix)
+	return s.store.SaveDocument(ctx, doc, "nova peça criada ("+templateKind+")")
+}
+
+// CreatePieceFromLibraryAsset creates a new editable piece initialized with a Library image
+// so the user can add text/logos on top or place agent annotations directly over the artwork.
+func (s *Service) CreatePieceFromLibraryAsset(ctx context.Context, assetID string, formatStr string, customTitle string) (document.Document, error) {
+	asset, err := s.store.GetLibraryAsset(ctx, assetID)
+	if err != nil {
+		return document.Document{}, fmt.Errorf("load library asset %s: %w", assetID, err)
+	}
+	if asset.MediaKind != "image" || asset.AssetURL == "" {
+		return document.Document{}, fmt.Errorf("asset %s is not an editable image", assetID)
+	}
+
+	fmtTarget := document.FormatFeed
+	pieceType := "feed_single"
+	if strings.EqualFold(strings.TrimSpace(formatStr), "story") || (strings.TrimSpace(formatStr) == "" && asset.Format == "story") {
+		fmtTarget = document.FormatStory
+		pieceType = "story"
+	}
+	wsW, wsH, expW, expH, scale, _ := document.PresetDimensions(fmtTarget)
+
+	suffix := uuid.NewString()[:8]
+	title := strings.TrimSpace(customTitle)
+	if title == "" {
+		title = "Edição — " + asset.Title
+	}
+
+	layerFit := "cover"
+	if asset.Classification == "marca" {
+		layerFit = "contain"
+	}
+
+	doc := document.Document{
+		ID:                "piece-img-" + suffix,
+		SchemaVersion:     1,
+		Kind:              "piece",
+		PieceType:         pieceType,
+		Title:             title,
+		CompanyID:         asset.CompanyID,
+		Format:            fmtTarget,
+		WorkspaceWidth:    wsW,
+		WorkspaceHeight:   wsH,
+		ExportWidth:       expW,
+		ExportHeight:      expH,
+		ExportScale:       scale,
+		ReferenceImageURL: asset.AssetURL,
+		Revision:          1,
+		Status:            "draft",
+		Caption:           asset.Caption,
+		Pages: []document.Page{
+			{
+				ID:         "page-" + suffix + "-1",
+				Index:      0,
+				Title:      "Página 01",
+				Background: "#F6F7EE",
+				Layers: []document.Layer{
+					{
+						ID:        "base-image-" + suffix,
+						Name:      asset.Title,
+						Kind:      "image",
+						X:         0,
+						Y:         0,
+						Width:     wsW,
+						Height:    wsH,
+						ScaleX:    1,
+						ScaleY:    1,
+						Opacity:   1,
+						Visible:   true,
+						Locked:    false,
+						ZIndex:    1,
+						AssetKey:  asset.ID,
+						AssetURL:  asset.AssetURL,
+						ObjectFit: layerFit,
+						PositionX: 0.5,
+						PositionY: 0.5,
+					},
+				},
+			},
+		},
+	}
+
+	return s.store.SaveDocument(ctx, doc, "criado a partir da biblioteca: "+asset.FileName)
+}
+
+// ImportEditorImage validates a raster image uploaded from disk, stores it in the managed library,
+// indexes it in library_assets, and returns its /library-assets/* URL for editor use and backup.
+func (s *Service) ImportEditorImage(ctx context.Context, fileName string, dataBase64 string) (library.LibraryAsset, error) {
+	if s.libraryDir == "" {
+		return library.LibraryAsset{}, errors.New("diretório da biblioteca gerenciada não configurado")
+	}
+	raw, err := decodeBase64Payload(dataBase64)
+	if err != nil {
+		return library.LibraryAsset{}, err
+	}
+	cfg, imgFmt, err := image.DecodeConfig(bytes.NewReader(raw))
+	if err != nil {
+		return library.LibraryAsset{}, fmt.Errorf("imagem inválida: %w", err)
+	}
+	ext := "png"
+	mime := "image/png"
+	if imgFmt == "jpeg" {
+		ext = "jpg"
+		mime = "image/jpeg"
+	}
+
+	stem := sanitizeFileStem(fileName)
+	if stem == "" {
+		stem = "imagem-editor"
+	}
+	shortID := uuid.NewString()[:8]
+	storedName := fmt.Sprintf("%s-%s.%s", stem, shortID, ext)
+	relPath := filepath.ToSlash(filepath.Join("custom", storedName))
+	targetPath := filepath.Join(s.libraryDir, filepath.FromSlash(relPath))
+	if err := os.MkdirAll(filepath.Dir(targetPath), 0o750); err != nil {
+		return library.LibraryAsset{}, fmt.Errorf("create custom library dir: %w", err)
+	}
+	if err := writeFileAtomic(targetPath, raw); err != nil {
+		return library.LibraryAsset{}, err
+	}
+
+	sum := sha256.Sum256(raw)
+	docFmt := "other"
+	if cfg.Width == 1080 && cfg.Height == 1920 {
+		docFmt = "story"
+	} else if cfg.Width == 1080 && cfg.Height == 1350 {
+		docFmt = "feed"
+	}
+
+	asset := library.LibraryAsset{
+		ID:             "custom-" + shortID,
+		CompanyID:      library.DefaultCompanyID,
+		RelPath:        relPath,
+		ThumbRelPath:   relPath,
+		SourceRelPath:  "editor-upload/" + filepath.Base(fileName),
+		FileName:       storedName,
+		MimeType:       mime,
+		MediaKind:      "image",
+		Classification: "cena",
+		SubCategory:    "importado_editor",
+		Format:         docFmt,
+		Title:          stem,
+		Width:          cfg.Width,
+		Height:         cfg.Height,
+		Bytes:          int64(len(raw)),
+		SHA256:         hex.EncodeToString(sum[:]),
+		MetadataJSON:   "{}",
+		ImportedAt:     time.Now().UTC().Format(time.RFC3339),
+		AssetURL:       "/library-assets/" + relPath,
+		ThumbURL:       "/library-assets/" + relPath,
+	}
+	if err := s.store.UpsertLibraryAsset(ctx, asset); err != nil {
+		return library.LibraryAsset{}, err
+	}
+	return asset, nil
+}
+
+// SaveDraft persists working changes without creating a new numbered history revision.
+func (s *Service) SaveDraft(ctx context.Context, doc document.Document) (document.Document, error) {
+	return s.store.SaveDraft(ctx, doc)
+}
+
+// SaveDocument validates and saves an updated editable document as a new numbered revision.
 func (s *Service) SaveDocument(ctx context.Context, doc document.Document, note string) (document.Document, error) {
 	if strings.TrimSpace(note) == "" {
-		note = "manual edit"
+		note = "versão salva manualmente"
 	}
 	return s.store.SaveDocument(ctx, doc, note)
+}
+
+// ListRevisions lists saved versions for a document.
+func (s *Service) ListRevisions(ctx context.Context, documentID string) ([]sqlite.RevisionSummary, error) {
+	return s.store.ListRevisions(ctx, documentID)
+}
+
+// GetRevision returns a historical snapshot for side-by-side comparison.
+func (s *Service) GetRevision(ctx context.Context, documentID string, revision int) (sqlite.RevisionRecord, error) {
+	return s.store.GetRevision(ctx, documentID, revision)
+}
+
+// RestoreRevision restores an older snapshot into a new draft revision.
+func (s *Service) RestoreRevision(ctx context.Context, documentID string, revision int) (document.Document, error) {
+	return s.store.RestoreRevisionAsDraft(ctx, documentID, revision)
+}
+
+// StartDraftFromApproved unlocks an approved document into a new draft revision, keeping the approved revision intact.
+func (s *Service) StartDraftFromApproved(ctx context.Context, documentID string) (document.Document, error) {
+	return s.store.StartDraftFromApproved(ctx, documentID)
+}
+
+// CheckOfferConsistency verifies visible text prices in doc against the linked DatedOffer (if any).
+func (s *Service) CheckOfferConsistency(ctx context.Context, doc document.Document) (document.OfferCheckResult, error) {
+	if strings.TrimSpace(doc.OfferID) == "" {
+		return document.CheckOfferConsistency(doc, nil), nil
+	}
+	offer, err := s.store.GetDatedOffer(ctx, doc.OfferID)
+	if err != nil {
+		return document.OfferCheckResult{}, err
+	}
+	return document.CheckOfferConsistency(doc, offer), nil
+}
+
+// ApproveDocument verifies offer price consistency and marks the exact revision as approved.
+func (s *Service) ApproveDocument(ctx context.Context, doc document.Document, confirmConflicts bool) (ApproveResult, error) {
+	check, err := s.CheckOfferConsistency(ctx, doc)
+	if err != nil {
+		return ApproveResult{}, err
+	}
+	if check.Status == "conflict" && !confirmConflicts {
+		return ApproveResult{
+			Approved:   false,
+			OfferCheck: check,
+		}, nil
+	}
+	note := "versão aprovada"
+	if check.Status == "conflict" && confirmConflicts {
+		note = "versão aprovada com confirmação manual de divergência"
+	}
+	approvedDoc, err := s.store.ApproveDocument(ctx, doc, note)
+	if err != nil {
+		return ApproveResult{}, err
+	}
+	return ApproveResult{
+		Approved:   true,
+		Document:   approvedDoc,
+		OfferCheck: check,
+	}, nil
 }
 
 // ResetSeedDocument restores the representative V5 baseline as a new revision in SQLite.
@@ -151,16 +522,9 @@ func (s *Service) ExportAsset(ctx context.Context, req ExportRequest) (sqlite.Ex
 		return sqlite.ExportRecord{}, err
 	}
 
-	rawB64 := req.DataBase64
-	if idx := strings.Index(rawB64, ","); idx != -1 && strings.HasPrefix(rawB64[:idx], "data:") {
-		rawB64 = rawB64[idx+1:]
-	}
-	raw, err := base64.StdEncoding.DecodeString(strings.TrimSpace(rawB64))
+	raw, err := decodeBase64Payload(req.DataBase64)
 	if err != nil {
-		return sqlite.ExportRecord{}, fmt.Errorf("decode base64 raster: %w", err)
-	}
-	if len(raw) == 0 {
-		return sqlite.ExportRecord{}, errors.New("empty raster payload")
+		return sqlite.ExportRecord{}, err
 	}
 
 	cfg, actualFmt, err := image.DecodeConfig(bytes.NewReader(raw))
@@ -208,6 +572,258 @@ func (s *Service) ExportAsset(ctx context.Context, req ExportRequest) (sqlite.Ex
 		return sqlite.ExportRecord{}, err
 	}
 	return rec, nil
+}
+
+// ExportBundle writes a full numbered sequence folder (01.png, 02.png, ..., legenda.txt, manifesto.json)
+// atomically for any single or multi-page document, verifying every page against expected pixel dimensions.
+func (s *Service) ExportBundle(ctx context.Context, req ExportBundleRequest) (sqlite.ExportBundleRecord, error) {
+	doc, err := s.store.GetDocument(ctx, req.DocumentID)
+	if err != nil {
+		return sqlite.ExportBundleRecord{}, fmt.Errorf("load document %s: %w", req.DocumentID, err)
+	}
+	ext, expectedImageFmt, err := normalizeExportFormat(req.Format)
+	if err != nil {
+		return sqlite.ExportBundleRecord{}, err
+	}
+	if len(req.Pages) != len(doc.Pages) {
+		return sqlite.ExportBundleRecord{}, fmt.Errorf("expected %d rendered pages, got %d", len(doc.Pages), len(req.Pages))
+	}
+
+	stem := sanitizeFileStem(doc.Title)
+	if stem == "" {
+		stem = sanitizeFileStem(doc.ID)
+	}
+	if len(stem) > 48 {
+		stem = stem[:48]
+	}
+	stamp := time.Now().UTC().Format("20060102-150405")
+	statusTag := "aprovado"
+	isDraftWarning := doc.Status != "approved"
+	if isDraftWarning {
+		statusTag = "RASCUNHO"
+	}
+	bundleDirName := fmt.Sprintf("%s-v%03d-%s-%s", stem, doc.Revision, statusTag, stamp)
+	bundleDir := filepath.Join(s.exportsDir, bundleDirName)
+	if err := os.MkdirAll(bundleDir, 0o750); err != nil {
+		return sqlite.ExportBundleRecord{}, fmt.Errorf("create export bundle directory: %w", err)
+	}
+
+	bundleID := "bnd-" + uuid.NewString()[:8]
+	now := time.Now().UTC().Format(time.RFC3339)
+
+	type manifestPage struct {
+		PageNumber int    `json:"pageNumber"`
+		Title      string `json:"title"`
+		FileName   string `json:"fileName"`
+		SHA256     string `json:"sha256"`
+		Width      int    `json:"width"`
+		Height     int    `json:"height"`
+		Bytes      int64  `json:"bytes"`
+	}
+
+	manifestPages := make([]manifestPage, 0, len(req.Pages))
+	filePaths := make([]string, 0, len(req.Pages))
+	exportRecords := make([]sqlite.ExportRecord, 0, len(req.Pages))
+
+	for i, pagePayload := range req.Pages {
+		if pagePayload.PageIndex != i {
+			return sqlite.ExportBundleRecord{}, fmt.Errorf("page order mismatch at index %d (got pageIndex %d)", i, pagePayload.PageIndex)
+		}
+		raw, err := decodeBase64Payload(pagePayload.DataBase64)
+		if err != nil {
+			return sqlite.ExportBundleRecord{}, fmt.Errorf("page %d: %w", i+1, err)
+		}
+		cfg, actualFmt, err := image.DecodeConfig(bytes.NewReader(raw))
+		if err != nil {
+			return sqlite.ExportBundleRecord{}, fmt.Errorf("page %d invalid raster: %w", i+1, err)
+		}
+		if actualFmt != expectedImageFmt {
+			return sqlite.ExportBundleRecord{}, fmt.Errorf("page %d format mismatch: got %q, expected %q", i+1, actualFmt, expectedImageFmt)
+		}
+		if cfg.Width != doc.ExportWidth || cfg.Height != doc.ExportHeight {
+			return sqlite.ExportBundleRecord{}, fmt.Errorf("page %d dimension mismatch: got %dx%d, expected %dx%d", i+1, cfg.Width, cfg.Height, doc.ExportWidth, doc.ExportHeight)
+		}
+
+		fileName := fmt.Sprintf("%02d.%s", i+1, ext)
+		targetPath := filepath.Join(bundleDir, fileName)
+		if err := writeFileAtomic(targetPath, raw); err != nil {
+			return sqlite.ExportBundleRecord{}, err
+		}
+		sum := sha256.Sum256(raw)
+		shaHex := hex.EncodeToString(sum[:])
+
+		filePaths = append(filePaths, targetPath)
+		manifestPages = append(manifestPages, manifestPage{
+			PageNumber: i + 1,
+			Title:      pagePayload.Title,
+			FileName:   fileName,
+			SHA256:     shaHex,
+			Width:      cfg.Width,
+			Height:     cfg.Height,
+			Bytes:      int64(len(raw)),
+		})
+		exportRecords = append(exportRecords, sqlite.ExportRecord{
+			ID:         uuid.NewString(),
+			DocumentID: doc.ID,
+			Revision:   doc.Revision,
+			Format:     ext,
+			PageIndex:  i,
+			BundleID:   bundleID,
+			FilePath:   targetPath,
+			SHA256:     shaHex,
+			Width:      cfg.Width,
+			Height:     cfg.Height,
+			Bytes:      int64(len(raw)),
+			CreatedAt:  now,
+		})
+	}
+
+	captionContent := buildBundleCaptionText(doc)
+	captionPath := filepath.Join(bundleDir, "legenda.txt")
+	if err := writeFileAtomic(captionPath, []byte(captionContent)); err != nil {
+		return sqlite.ExportBundleRecord{}, err
+	}
+
+	manifestObj := map[string]any{
+		"bundleId":                bundleID,
+		"documentId":              doc.ID,
+		"title":                   doc.Title,
+		"revision":                doc.Revision,
+		"approvedRevision":        doc.ApprovedRevision,
+		"documentStatus":          doc.Status,
+		"isDraftWarning":          isDraftWarning,
+		"format":                  doc.Format,
+		"pieceType":               doc.PieceType,
+		"offerId":                 doc.OfferID,
+		"offerRef":                doc.OfferRef,
+		"ctaText":                 doc.CTAText,
+		"ctaDestination":          doc.CTADestination,
+		"nativeInstruction":       doc.NativeInstruction,
+		"publicationInstructions": doc.PublicationInstructions,
+		"captionFile":             "legenda.txt",
+		"pages":                   manifestPages,
+		"exportedAt":              now,
+	}
+	manifestBytes, err := json.MarshalIndent(manifestObj, "", "  ")
+	if err != nil {
+		return sqlite.ExportBundleRecord{}, fmt.Errorf("encode manifesto.json: %w", err)
+	}
+	manifestPath := filepath.Join(bundleDir, "manifesto.json")
+	if err := writeFileAtomic(manifestPath, manifestBytes); err != nil {
+		return sqlite.ExportBundleRecord{}, err
+	}
+
+	for _, rec := range exportRecords {
+		if err := s.store.RecordExport(ctx, rec); err != nil {
+			return sqlite.ExportBundleRecord{}, err
+		}
+	}
+
+	bundleRec := sqlite.ExportBundleRecord{
+		ID:             bundleID,
+		DocumentID:     doc.ID,
+		Revision:       doc.Revision,
+		DocumentStatus: doc.Status,
+		Format:         ext,
+		PieceType:      doc.PieceType,
+		BundleDir:      bundleDir,
+		CaptionPath:    captionPath,
+		ManifestPath:   manifestPath,
+		PageCount:      len(filePaths),
+		FilePaths:      filePaths,
+		IsDraftWarning: isDraftWarning,
+		CreatedAt:      now,
+	}
+	if err := s.store.RecordExportBundle(ctx, bundleRec); err != nil {
+		return sqlite.ExportBundleRecord{}, err
+	}
+	return bundleRec, nil
+}
+
+// ListExportBundles lists recent bundle exports for documentID.
+func (s *Service) ListExportBundles(ctx context.Context, documentID string) ([]sqlite.ExportBundleRecord, error) {
+	return s.store.ListExportBundles(ctx, documentID)
+}
+
+// OpenExportPath opens a verified export directory inside exportsDir in the OS file manager.
+func (s *Service) OpenExportPath(targetPath string) error {
+	cleanExports := filepath.Clean(s.exportsDir)
+	cleanTarget := filepath.Clean(targetPath)
+	if cleanTarget == "" || cleanTarget == "." {
+		cleanTarget = cleanExports
+	}
+	if cleanTarget != cleanExports && !strings.HasPrefix(cleanTarget, cleanExports+string(filepath.Separator)) {
+		return fmt.Errorf("caminho fora da pasta de exportações permitida")
+	}
+	if _, err := os.Stat(cleanTarget); err != nil {
+		return err
+	}
+	cmd := exec.Command("xdg-open", cleanTarget)
+	return cmd.Start()
+}
+
+func buildBundleCaptionText(doc document.Document) string {
+	var b strings.Builder
+	if doc.Status != "approved" {
+		b.WriteString("[AVISO: RASCUNHO — MATERIAL AINDA NÃO APROVADO PARA PUBLICAÇÃO]\n\n")
+	} else {
+		b.WriteString(fmt.Sprintf("[VERSÃO APROVADA v%d]\n\n", doc.Revision))
+	}
+	if strings.TrimSpace(doc.Caption) != "" {
+		b.WriteString(doc.Caption)
+		b.WriteString("\n\n")
+	} else {
+		b.WriteString("(Sem legenda preenchida)\n\n")
+	}
+	b.WriteString("--- INSTRUÇÕES DE PUBLICAÇÃO ---\n")
+	b.WriteString(fmt.Sprintf("Peça: %s (%s · %d página(s))\n", doc.Title, doc.PieceType, len(doc.Pages)))
+	if strings.TrimSpace(doc.CTAText) != "" {
+		b.WriteString("CTA exibido: " + doc.CTAText + "\n")
+	}
+	if strings.TrimSpace(doc.CTADestination) != "" {
+		b.WriteString("Destino do link/contato: " + doc.CTADestination + "\n")
+	}
+	if strings.TrimSpace(doc.NativeInstruction) != "" {
+		b.WriteString("Recurso nativo do Instagram: " + doc.NativeInstruction + "\n")
+	}
+	if strings.TrimSpace(doc.PublicationInstructions) != "" {
+		b.WriteString("Notas adicionais: " + doc.PublicationInstructions + "\n")
+	}
+	return b.String()
+}
+
+func decodeBase64Payload(rawB64 string) ([]byte, error) {
+	if idx := strings.Index(rawB64, ","); idx != -1 && strings.HasPrefix(rawB64[:idx], "data:") {
+		rawB64 = rawB64[idx+1:]
+	}
+	raw, err := base64.StdEncoding.DecodeString(strings.TrimSpace(rawB64))
+	if err != nil {
+		return nil, fmt.Errorf("decode base64 raster: %w", err)
+	}
+	if len(raw) == 0 {
+		return nil, errors.New("empty raster payload")
+	}
+	return raw, nil
+}
+
+func clonePagesFreshIDs(doc document.Document, suffix string) document.Document {
+	pages := make([]document.Page, len(doc.Pages))
+	for i, p := range doc.Pages {
+		layers := make([]document.Layer, len(p.Layers))
+		for j, l := range p.Layers {
+			l.ID = fmt.Sprintf("%s-%s-p%d-l%d", suffix, sanitizeFileStem(l.ID), i+1, j+1)
+			layers[j] = l
+		}
+		pages[i] = document.Page{
+			ID:         fmt.Sprintf("page-%s-%02d", suffix, i+1),
+			Index:      i,
+			Title:      p.Title,
+			Background: p.Background,
+			Layers:     layers,
+		}
+	}
+	doc.Pages = pages
+	return doc
 }
 
 func normalizeExportFormat(format string) (ext string, imageFmt string, err error) {
