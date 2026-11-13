@@ -15,6 +15,7 @@ import (
 	"github.com/Rafael-Albernaz-dev/InstaGo-adb-app/internal/adapters/sqlite"
 	"github.com/Rafael-Albernaz-dev/InstaGo-adb-app/internal/adapters/wailsapp"
 	"github.com/Rafael-Albernaz-dev/InstaGo-adb-app/internal/usecase/editor"
+	"github.com/Rafael-Albernaz-dev/InstaGo-adb-app/internal/usecase/library"
 )
 
 const defaultCreativeBase = "/home/toru/Documents/Instagram Rural Conecta"
@@ -25,6 +26,8 @@ func main() {
 	dataRoot := resolveDataRoot()
 	dbPath := filepath.Join(dataRoot, "instago.db")
 	exportsDir := filepath.Join(dataRoot, "exports")
+	libraryDir := filepath.Join(dataRoot, "library")
+	backupsDir := filepath.Join(dataRoot, "backups")
 
 	store, err := sqlite.Open(ctx, dbPath)
 	if err != nil {
@@ -37,6 +40,7 @@ func main() {
 		creativeBase = defaultCreativeBase
 	}
 	assetResolver := assets.NewResolver(creativeBase)
+	assetResolver.SetLibraryDir(libraryDir)
 
 	appVersion := "0.0.0-dev"
 	if rawVer, err := os.ReadFile("VERSION"); err == nil {
@@ -48,6 +52,14 @@ func main() {
 	svc := editor.NewService(store, creativeBase, assetResolver.BaseExists, exportsDir, appVersion)
 	bridge := wailsapp.NewEditorBridge(svc)
 
+	libSvc := library.NewService(store, libraryDir, backupsDir, exportsDir, creativeBase, filepath.Join(".agents", "skills"), appVersion)
+	go func() {
+		if err := libSvc.EnsureInitialized(ctx); err != nil {
+			log.Printf("instago: library auto-init warning: %v", err)
+		}
+	}()
+	libBridge := wailsapp.NewLibraryBridge(libSvc)
+
 	distFS, err := fs.Sub(instagoassets.FrontendDist, "frontend/dist")
 	if err != nil {
 		log.Fatalf("instago: failed to open embedded frontend/dist: %v", err)
@@ -58,6 +70,7 @@ func main() {
 		Description: "Desktop marketing automation and creative studio",
 		Services: []application.Service{
 			application.NewService(bridge),
+			application.NewService(libBridge),
 		},
 		Assets: application.AssetOptions{
 			Handler:    application.AssetFileServerFS(distFS),
@@ -67,7 +80,7 @@ func main() {
 
 	app.Window.NewWithOptions(application.WebviewWindowOptions{
 		Name:             "main",
-		Title:            "InstaGo — Editor Nativo (R0)",
+		Title:            "InstaGo — Estúdio e Biblioteca (R1)",
 		Width:            1360,
 		Height:           880,
 		MinWidth:         960,
