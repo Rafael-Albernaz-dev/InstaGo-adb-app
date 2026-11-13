@@ -2,7 +2,7 @@
 
 Local-first desktop workspace for planning, designing, versioning, and automating Instagram campaigns — built with **Go**, **Wails 3**, **Svelte + TypeScript**, **Fabric.js**, **SQLite**, local **AI CLI** integration, and a planned **Android ADB** publishing bridge.
 
-> **Status:** Milestone **R0** (`0.0.0-dev`) — native **Wails 3** + **Svelte 5** + **Fabric.js 7** + **SQLite** canvas editor scaffold with versioned revisions, undo/redo history, and verified `1080×1350` PNG/JPG export. Future milestones (**R1–R8**) cover full campaign planning, Codex CLI orchestration, and optional Android ADB automation.
+> **Status:** Milestones **R0–R3** (`0.0.0-dev`) — native **Wails 3** + **Svelte 5** + **Fabric.js 7** + **SQLite** desktop workspace with managed SHA-256 asset library, portable `.zip` backups, multi-page free-form editor (Feed `1080×1350`, Story `1080×1920`, carousels), versioned revisions with approval locks and bundle export, local **Codex CLI** JSONL agent orchestration with visual canvas annotations, and Linux desktop/taskbar integration. Future milestones (**R4–R8**) cover monthly campaign planning, date research, packaging/restore, Windows, and optional Android ADB automation.
 
 ---
 
@@ -19,7 +19,17 @@ Local-first desktop workspace for planning, designing, versioning, and automatin
 
 ---
 
-## Planned Stack & Architecture
+## Implemented Scope (R0–R3)
+
+- **Foundation & native shell (R0):** Wails 3 desktop window (`GTK4/WebKitGTK 6.0` and `GTK3/WebKit2GTK 4.1` build targets), Go/Svelte bridge, SQLite migrations, and deterministic PNG/JPG raster export.
+- **Asset library, profiles & backups (R1):** Managed `$INSTAGO_DATA_DIR/library` storage with SHA-256 indexing, concurrent thumbnail generation, category filters, company profile settings, integrity checks, and portable `.zip` backup export.
+- **Free-form multi-page editor & versioning (R2):** Layer manipulation, alignment helpers, image crop/framing (`cover`/`contain`), Feed/Story/carousel pagination, continuous draft autosave, numbered snapshots with side-by-side comparison, approval immutability, commercial offer price-conflict warnings, and numbered export bundles (`01.png`, `legenda.txt`, `manifesto.json`).
+- **Local AI CLI integration (R3):** `os/exec` Codex CLI runner with ChatGPT login detection, live JSONL log streaming, single-task queue, cancellation, partial artifact recovery, visual pin/rectangle annotations on canvas, and floating editor assistant widget.
+- **Linux desktop integration:** Embedded SVG/PNG app icon and `make install-desktop` helper (`scripts/linux/install-desktop.sh`) registering the `.desktop` entry and hicolor icons.
+
+---
+
+## Architecture & Planned Stack
 
 | Layer | Technology | Role |
 |---|---|---|
@@ -36,12 +46,12 @@ Architectural boundaries follow pragmatic Clean Architecture: domain rules and u
 
 ## Roadmap
 
-- **R0 — Foundation & native editor proof:** Go/Wails 3 + Svelte + Fabric.js + SQLite scaffold, single-composition conversion, native Ubuntu window, save/reopen/export baseline.
-- **R1 — Profiles, asset library & base import:** Company profiles, SHA-256 asset indexing, thumbnails, filters, backup/restore.
-- **R2 — Free-form editor, multi-page & versioning:** Full layer editing, carousel/Story pagination, version diffs, and approval locks.
-- **R3 — Local AI CLI integration:** `os/exec` JSONL runner, native image generation, cancellation, quota/error handling, and artifact recovery.
-- **R4 — Campaigns, date research & monthly planner:** Source-backed calendar research, configurable cadence, batch queue after approval.
-- **R5 — Usable MVP delivery (Ubuntu):** Batch export bundles, operational tracking, backup/restore verification, and packaging.
+- **R0 — Foundation & native editor proof (Implemented):** Go/Wails 3 + Svelte + Fabric.js + SQLite scaffold, single-composition conversion, native Ubuntu window, save/reopen/export baseline.
+- **R1 — Profiles, asset library & base import (Implemented):** Company profiles, SHA-256 asset indexing, thumbnails, filters, integrity check, and `.zip` backup export.
+- **R2 — Free-form editor, multi-page & versioning (Implemented):** Full layer editing, carousel/Story pagination, version diffs, approval locks, and numbered export bundles.
+- **R3 — Local AI CLI integration (Implemented):** `os/exec` JSONL runner, native image generation, visual canvas annotations, cancellation, error handling, and artifact recovery.
+- **R4 — Campaigns, date research & monthly planner (Next):** Source-backed calendar research, configurable cadence, batch queue after approval.
+- **R5 — Usable MVP delivery (Ubuntu):** Batch export bundles, operational tracking, backup restore verification, and packaging.
 - **R6 — Experimental Android ADB connector:** Device checks, media transfer, single-execution locking, and observed-result verification.
 - **R7 — Automated scheduling & recovery:** Persistent worker queue, missed-schedule policy, and official API capability evaluation.
 - **R8 — Windows support & multi-company evolution:** WebView2 packaging, cross-platform adapters, and multi-brand workspaces.
@@ -66,6 +76,12 @@ Alternative GTK3/WebKit2GTK 4.1 fallback targets (when `gtk+-3.0` and `webkit2gt
 
 ```bash
 make check-gtk3 build-gtk3
+```
+
+Install local Linux `.desktop` entry and hicolor icons for the GTK3 desktop binary:
+
+```bash
+make install-desktop
 ```
 
 Local Git hooks (optional, recommended for contributors):
