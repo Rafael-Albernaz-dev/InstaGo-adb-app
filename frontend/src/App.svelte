@@ -30,7 +30,18 @@
   } from './lib/canvasMapper';
   import { loadBrandFonts } from './lib/fonts';
   import { HistoryStack } from './lib/history';
-  import type { DocumentModel, ExportRecord, Layer, WorkspaceInfo } from './lib/types';
+  import LibraryView from './components/LibraryView.svelte';
+  import SettingsView from './components/SettingsView.svelte';
+  import type {
+    BackupResult,
+    CompanyProfile,
+    DocumentModel,
+    ExportRecord,
+    IntegrityReport,
+    Layer,
+    LibraryOverview,
+    WorkspaceInfo
+  } from './lib/types';
 
   type NavSection = 'editor' | 'overview' | 'calendar' | 'library' | 'agent' | 'settings';
 
@@ -38,10 +49,12 @@
   let workspaceInfo = $state<WorkspaceInfo | null>(null);
   let doc = $state<DocumentModel | null>(null);
   let exportsList = $state<ExportRecord[]>([]);
+  let libraryOverview = $state<LibraryOverview | null>(null);
+  let libraryLoading = $state(false);
   let selectedLayerId = $state<string | null>(null);
   let showReference = $state(false);
   let stageScale = $state(0.75);
-  let statusMessage = $state('Inicializando InstaGo (R0)...');
+  let statusMessage = $state('Inicializando InstaGo (R1)...');
   let errorMessage = $state('');
   let fontsSummary = $state('Carregando fontes...');
   let busy = $state(false);
@@ -399,9 +412,127 @@
     commitFromCanvas();
   }
 
+  async function refreshLibrary() {
+    libraryLoading = true;
+    errorMessage = '';
+    try {
+      libraryOverview = await bridge.getLibraryOverview({});
+    } catch (err) {
+      errorMessage = `Erro ao carregar biblioteca: ${String(err)}`;
+    } finally {
+      libraryLoading = false;
+    }
+  }
+
+  async function switchSection(next: NavSection) {
+    if (next === activeSection) return;
+    if (activeSection === 'editor' && fabricCanvas) {
+      fabricCanvas.dispose();
+      fabricCanvas = null;
+    }
+    activeSection = next;
+    if (next === 'editor' && doc) {
+      await mountCanvas(doc);
+    } else if ((next === 'library' || next === 'settings') && !libraryOverview) {
+      await refreshLibrary();
+    }
+  }
+
+  async function handleOpenInEditor(documentId: string) {
+    busy = true;
+    errorMessage = '';
+    try {
+      const loaded = await bridge.getDocument(documentId);
+      doc = loaded;
+      history = new HistoryStack(loaded);
+      updateHistoryFlags();
+      selectedLayerId = null;
+      await switchSection('editor');
+      statusMessage = `Documento "${loaded.title}" aberto no editor`;
+    } catch (err) {
+      errorMessage = `Erro ao abrir documento no editor: ${String(err)}`;
+    } finally {
+      busy = false;
+    }
+  }
+
+  async function handleSaveProfile(profile: CompanyProfile) {
+    busy = true;
+    errorMessage = '';
+    try {
+      const saved = await bridge.updateProfile(profile);
+      if (libraryOverview) {
+        libraryOverview = { ...libraryOverview, profile: saved };
+      }
+      statusMessage = `Perfil "${saved.brand}" salvo no SQLite`;
+    } catch (err) {
+      errorMessage = `Erro ao salvar perfil: ${String(err)}`;
+    } finally {
+      busy = false;
+    }
+  }
+
+  async function handleReimportBase(sourceDir: string) {
+    busy = true;
+    errorMessage = '';
+    try {
+      const sum = await bridge.importBase(sourceDir);
+      await refreshLibrary();
+      statusMessage = `Base reimportada: ${sum.uniqueArtsCount} artes únicas, ${sum.auxiliaryCoversCount} capas extras, ${sum.totalAssetsCount} itens`;
+    } catch (err) {
+      errorMessage = `Erro ao reimportar base: ${String(err)}`;
+    } finally {
+      busy = false;
+    }
+  }
+
+  async function handleVerifyIntegrity(): Promise<IntegrityReport | null> {
+    busy = true;
+    errorMessage = '';
+    try {
+      const rep = await bridge.verifyIntegrity();
+      statusMessage = `Integridade conferida: ${rep.okCount}/${rep.totalAssets} OK`;
+      return rep;
+    } catch (err) {
+      errorMessage = `Erro na verificação de integridade: ${String(err)}`;
+      return null;
+    } finally {
+      busy = false;
+    }
+  }
+
+  async function handleCreateBackup(): Promise<BackupResult | null> {
+    busy = true;
+    errorMessage = '';
+    try {
+      const res = await bridge.createBackup();
+      statusMessage = `Backup criado: ${res.fileName} (${res.archivedFiles} arquivos)`;
+      return res;
+    } catch (err) {
+      errorMessage = `Erro ao gerar backup: ${String(err)}`;
+      return null;
+    } finally {
+      busy = false;
+    }
+  }
+
+  async function handleOpenFolder(
+    scope: 'library' | 'asset_dir' | 'exports' | 'backups' | 'creative_base',
+    assetId = ''
+  ) {
+    errorMessage = '';
+    try {
+      const opened = await bridge.openFolder(scope, assetId);
+      statusMessage = `Pasta aberta: ${opened}`;
+    } catch (err) {
+      errorMessage = `Erro ao abrir pasta: ${String(err)}`;
+    }
+  }
+
   function handleKeydown(e: KeyboardEvent) {
     const tag = (e.target as HTMLElement | null)?.tagName;
     const isInput = tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT';
+    if (activeSection !== 'editor') return;
     if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z' && !e.shiftKey && !isInput) {
       e.preventDefault();
       void handleUndo();
@@ -429,7 +560,9 @@
       updateHistoryFlags();
       await mountCanvas(seeded);
       exportsList = (await bridge.listExports(seeded.id)) ?? [];
-      statusMessage = `Pronto · R0 Editor Nativo (${seeded.exportWidth}×${seeded.exportHeight})`;
+      await refreshLibrary();
+      const artsCount = libraryOverview?.summary?.uniqueArtsCount ?? 0;
+      statusMessage = `Pronto · R1 (${seeded.exportWidth}×${seeded.exportHeight} · ${artsCount} artes únicas na biblioteca)`;
     } catch (err) {
       errorMessage = `Erro ao iniciar ponte Go/Wails: ${String(err)}`;
       statusMessage = 'Falha na inicialização';
@@ -443,36 +576,37 @@
   });
 </script>
 
-<div class="app-shell">
+<div class="app-shell" class:no-toolbar={activeSection !== 'editor'}>
   <header class="nav-bar">
     <div class="brand-title">
       <Layers size={16} />
       <span>InstaGo</span>
-      <span class="badge">R0 · Prova Nativa</span>
+      <span class="badge">R1 · Biblioteca e Perfil</span>
     </div>
 
     <nav class="nav-tabs" aria-label="Áreas principais">
-      <button class="nav-tab" class:active={activeSection === 'editor'} onclick={() => (activeSection = 'editor')}>
+      <button class="nav-tab" class:active={activeSection === 'editor'} onclick={() => switchSection('editor')}>
         Editor
       </button>
-      <button class="nav-tab" class:active={activeSection === 'overview'} onclick={() => (activeSection = 'overview')}>
+      <button class="nav-tab" class:active={activeSection === 'overview'} onclick={() => switchSection('overview')}>
         Visão geral
       </button>
-      <button class="nav-tab" class:active={activeSection === 'calendar'} onclick={() => (activeSection = 'calendar')}>
+      <button class="nav-tab" class:active={activeSection === 'calendar'} onclick={() => switchSection('calendar')}>
         Calendário
       </button>
-      <button class="nav-tab" class:active={activeSection === 'library'} onclick={() => (activeSection = 'library')}>
+      <button class="nav-tab" class:active={activeSection === 'library'} onclick={() => switchSection('library')}>
         Biblioteca
       </button>
-      <button class="nav-tab" class:active={activeSection === 'agent'} onclick={() => (activeSection = 'agent')}>
+      <button class="nav-tab" class:active={activeSection === 'agent'} onclick={() => switchSection('agent')}>
         Agente
       </button>
-      <button class="nav-tab" class:active={activeSection === 'settings'} onclick={() => (activeSection = 'settings')}>
+      <button class="nav-tab" class:active={activeSection === 'settings'} onclick={() => switchSection('settings')}>
         Configurações
       </button>
     </nav>
   </header>
 
+  {#if activeSection === 'editor'}
   <div class="toolbar">
     <div class="toolbar-group">
       <button onclick={handleUndo} disabled={!canUndo || busy} title="Desfazer (Ctrl+Z)">
@@ -523,6 +657,7 @@
       </button>
     </div>
   </div>
+  {/if}
 
   {#if activeSection === 'editor'}
     <main class="workspace">
@@ -714,14 +849,35 @@
         </div>
       </aside>
     </main>
+  {:else if activeSection === 'library'}
+    <LibraryView
+      overview={libraryOverview}
+      loading={libraryLoading}
+      onRefresh={refreshLibrary}
+      onOpenFolder={handleOpenFolder}
+      onOpenInEditor={handleOpenInEditor}
+      onNotify={(msg) => (statusMessage = msg)}
+    />
+  {:else if activeSection === 'settings'}
+    <SettingsView
+      overview={libraryOverview}
+      {workspaceInfo}
+      {fontsSummary}
+      {busy}
+      onSaveProfile={handleSaveProfile}
+      onReimport={handleReimportBase}
+      onVerifyIntegrity={handleVerifyIntegrity}
+      onCreateBackup={handleCreateBackup}
+      onOpenFolder={handleOpenFolder}
+    />
   {:else}
     <main style="padding:24px;overflow:auto">
       <div class="panel-section" style="max-width:640px">
         <h3>Área prevista no Roadmap ({activeSection})</h3>
         <p style="margin:0">
-          O shell wireframe já reserva as cinco áreas previstas no DRS. Na etapa atual (<strong>R0</strong>), apenas o
-          <strong>Editor Nativo</strong> com persistência SQLite e exportação verificada está ativo. As demais áreas
-          entram progressivamente nas etapas R1–R5.
+          O shell wireframe já reserva as áreas previstas no DRS. Já estão ativos:
+          <strong>Editor Nativo</strong> (R0) e <strong>Biblioteca, Perfil e Backup</strong> (R1). As áreas de
+          <strong>Calendário</strong>, <strong>Agente</strong> e <strong>Visão geral</strong> entram nas etapas R2–R5.
         </p>
       </div>
     </main>
