@@ -35,19 +35,40 @@ export interface Layer {
   positionY?: number;
 }
 
+export type DocumentKind = 'piece' | 'template';
+export type PieceType = 'feed_single' | 'carousel' | 'story';
+
+export interface AgentAnnotation {
+  id: string;
+  kind: 'pin' | 'rect';
+  x: number;
+  y: number;
+  width?: number;
+  height?: number;
+  layerId?: string;
+  note: string;
+  color?: string;
+  resolved?: boolean;
+  createdAt?: string;
+}
+
 export interface Page {
   id: string;
   index: number;
   title: string;
   background: string;
   layers: Layer[];
+  annotations?: AgentAnnotation[];
 }
 
 export interface DocumentModel {
   id: string;
   schemaVersion: number;
+  kind?: DocumentKind;
+  pieceType?: PieceType;
   title: string;
   companyId: string;
+  offerId?: string;
   offerRef: string;
   format: DocumentFormat;
   workspaceWidth: number;
@@ -57,11 +78,70 @@ export interface DocumentModel {
   exportScale: number;
   referenceImageUrl?: string;
   revision: number;
+  approvedRevision?: number;
   status: string;
+  caption?: string;
+  ctaText?: string;
+  ctaDestination?: string;
+  nativeInstruction?: string;
+  publicationInstructions?: string;
   pages: Page[];
   canvasJson?: string;
   createdAt: string;
   updatedAt: string;
+}
+
+export interface RevisionSummary {
+  documentId: string;
+  revision: number;
+  note: string;
+  status: string;
+  createdAt: string;
+}
+
+export interface RevisionRecord extends RevisionSummary {
+  document: DocumentModel;
+}
+
+export interface OfferCheckResult {
+  hasOffer: boolean;
+  offerId?: string;
+  offerTitle?: string;
+  validUntil?: string;
+  checkedAt?: string;
+  status: 'none' | 'ok' | 'warning' | 'conflict';
+  detectedPrices: string[];
+  expectedPromoBrl?: string;
+  expectedAfterBrl?: string;
+  messages: string[];
+}
+
+export interface ApproveResult {
+  approved: boolean;
+  document?: DocumentModel;
+  offerCheck: OfferCheckResult;
+}
+
+export interface ExportBundlePageInput {
+  pageIndex: number;
+  title: string;
+  dataBase64: string;
+}
+
+export interface ExportBundleRecord {
+  id: string;
+  documentId: string;
+  revision: number;
+  documentStatus: string;
+  format: string;
+  pieceType: string;
+  bundleDir: string;
+  captionPath: string;
+  manifestPath: string;
+  pageCount: number;
+  filePaths: string[];
+  isDraftWarning: boolean;
+  createdAt: string;
 }
 
 export interface WorkspaceInfo {
@@ -251,4 +331,76 @@ export interface BackupResult {
   sha256: string;
   archivedFiles: number;
   createdAt: string;
+}
+
+export type AgentTaskStatus =
+  | 'pending'
+  | 'running'
+  | 'needs_confirmation'
+  | 'completed'
+  | 'failed'
+  | 'canceled'
+  | 'interrupted_uncertain';
+
+export type AgentDeliveryMode = 'auto' | 'background_layer' | 'full_piece';
+
+export interface CLIHealth {
+  available: boolean;
+  binaryPath: string;
+  version: string;
+  authenticated: boolean;
+  authStatusText: string;
+  errorMessage?: string;
+}
+
+export interface AgentTask {
+  id: string;
+  documentId: string;
+  pageIndex: number;
+  requestedMode: AgentDeliveryMode;
+  resolvedMode: AgentDeliveryMode;
+  prompt: string;
+  confirmationReason?: string;
+  status: AgentTaskStatus;
+  threadId?: string;
+  workDir?: string;
+  outputImagePath?: string;
+  outputAssetId?: string;
+  outputAssetUrl?: string;
+  artifactRecoverable?: boolean;
+  instructionsVersion?: string;
+  contextSummary?: string;
+  resultDocumentId?: string;
+  resultRevision?: number;
+  summaryText?: string;
+  errorCode?: string;
+  errorMessage?: string;
+  startedAt: string;
+  updatedAt: string;
+  finishedAt?: string;
+}
+
+export interface AgentLogEntry {
+  id: string;
+  taskId: string;
+  seq: number;
+  stream: string;
+  eventType?: string;
+  text: string;
+  createdAt: string;
+}
+
+export interface AgentTaskDetail {
+  task: AgentTask;
+  logs: AgentLogEntry[];
+}
+
+export interface StartAgentTaskInput {
+  documentId: string;
+  pageIndex: number;
+  mode: AgentDeliveryMode;
+  prompt: string;
+  snapshotBase64?: string;
+  confirmBeforeRun?: boolean;
+  includeAnnotations: boolean;
 }

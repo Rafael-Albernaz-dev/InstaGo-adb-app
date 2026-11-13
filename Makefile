@@ -2,9 +2,9 @@ SHELL := /bin/bash
 export GOTOOLCHAIN := local
 export GOFLAGS := -mod=readonly
 
-CORE_GO_PKGS := ./internal/domain/... ./internal/adapters/sqlite/... ./internal/adapters/assets/... ./internal/usecase/...
+CORE_GO_PKGS := ./internal/domain/... ./internal/adapters/sqlite/... ./internal/adapters/assets/... ./internal/adapters/codex/... ./internal/usecase/...
 
-.PHONY: hygiene-check gofmt-check front-build front-test check-core check-native check-gtk3 native-deps gtk3-deps build build-gtk3 run check hooks
+.PHONY: hygiene-check gofmt-check front-build front-test check-core check-native check-gtk3 native-deps gtk3-deps build build-gtk3 install-desktop run check hooks
 
 hygiene-check:
 	bash scripts/ci/check-repo-hygiene.sh
@@ -46,6 +46,9 @@ check-gtk3: gtk3-deps front-build
 build-gtk3: gtk3-deps front-build
 	mkdir -p build/bin
 	go build -tags gtk3 -trimpath -o build/bin/instago-gtk3 ./cmd/instago
+
+install-desktop: build-gtk3
+	bash scripts/linux/install-desktop.sh "$(CURDIR)/build/bin/instago-gtk3"
 
 build: native-deps front-build
 	mkdir -p build/bin

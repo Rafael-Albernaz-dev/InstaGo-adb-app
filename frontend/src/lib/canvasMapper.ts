@@ -5,7 +5,7 @@ import {
   Rect,
   Textbox
 } from 'fabric';
-import type { Layer, Page } from './types';
+import type { AgentAnnotation, Layer, Page } from './types';
 
 export interface TaggedObject extends FabricObject {
   instagoLayerId?: string;
@@ -146,13 +146,83 @@ async function createImageObject(layer: Layer): Promise<FabricObject> {
   return tagLayerObject(img, layer.id);
 }
 
+const renderGenerationByCanvas = new WeakMap<Canvas, number>();
+
+export function updateCanvasBackgroundInPlace(canvas: Canvas, background: string): void {
+  canvas.backgroundColor = background || '#F6F7EE';
+  canvas.requestRenderAll();
+}
+
+export function updateLayerObjectInPlace(canvas: Canvas, layer: Layer): boolean {
+  const obj = canvas.getObjects().find((o) => getLayerId(o) === layer.id);
+  if (!obj) {
+    return false;
+  }
+
+  obj.set({
+    left: layer.x,
+    top: layer.y,
+    angle: layer.angle || 0,
+    opacity: layer.opacity ?? 1,
+    visible: layer.visible
+  });
+  applyLockState(obj, layer.locked);
+
+  if (layer.kind === 'text') {
+    const tb = obj as Textbox;
+    tb.set({
+      text: layer.text ?? '',
+      width: Math.max(24, layer.width || 240),
+      scaleX: layer.scaleX || 1,
+      scaleY: layer.scaleY || 1,
+      fill: layer.fill || '#374F1E',
+      fontFamily: layer.fontFamily || 'Inter',
+      fontSize: layer.fontSize || 20,
+      fontWeight: layer.fontWeight || '400',
+      lineHeight: layer.lineHeight || 1.2,
+      charSpacing: layer.letterSpacing || 0,
+      textAlign: (layer.textAlign as 'left' | 'center' | 'right') || 'left',
+      editable: !layer.locked
+    });
+    tb.initDimensions();
+    tb.setCoords();
+    canvas.requestRenderAll();
+    return true;
+  }
+
+  if (layer.kind === 'rect') {
+    obj.set({
+      width: layer.width,
+      height: layer.height,
+      scaleX: layer.scaleX || 1,
+      scaleY: layer.scaleY || 1,
+      fill: layer.fill || '#98B432',
+      stroke: layer.stroke || undefined,
+      strokeWidth: layer.strokeWidth || 0,
+      rx: layer.radius || 0,
+      ry: layer.radius || 0
+    });
+    obj.setCoords();
+    canvas.requestRenderAll();
+    return true;
+  }
+
+  // Image layers that only move/change opacity/visibility/lock update in place;
+  // changes to assetUrl, objectFit, or focal position trigger a clean full re-render.
+  return false;
+}
+
 export async function renderPageToCanvas(canvas: Canvas, page: Page): Promise<void> {
-  canvas.clear();
-  canvas.backgroundColor = page.background || '#F6F7EE';
+  const gen = (renderGenerationByCanvas.get(canvas) ?? 0) + 1;
+  renderGenerationByCanvas.set(canvas, gen);
 
   const ordered = [...page.layers].sort((a, b) => a.zIndex - b.zIndex);
+  const builtObjects: FabricObject[] = [];
 
   for (const layer of ordered) {
+    if (renderGenerationByCanvas.get(canvas) !== gen) {
+      return;
+    }
     let obj: FabricObject;
     if (layer.kind === 'rect') {
       obj = new Rect({
@@ -194,7 +264,8 @@ export async function renderPageToCanvas(canvas: Canvas, page: Page): Promise<vo
         lineHeight: layer.lineHeight || 1.2,
         charSpacing: layer.letterSpacing || 0,
         textAlign: (layer.textAlign as 'left' | 'center' | 'right') || 'left',
-        splitByGrapheme: false
+        splitByGrapheme: false,
+        editable: !layer.locked
       });
       applyLockState(obj, layer.locked);
       tagLayerObject(obj, layer.id);
@@ -220,9 +291,18 @@ export async function renderPageToCanvas(canvas: Canvas, page: Page): Promise<vo
         tagLayerObject(obj, layer.id);
       }
     }
-    canvas.add(obj);
+    builtObjects.push(obj);
   }
 
+  if (renderGenerationByCanvas.get(canvas) !== gen) {
+    return;
+  }
+
+  canvas.clear();
+  canvas.backgroundColor = page.background || '#F6F7EE';
+  for (const obj of builtObjects) {
+    canvas.add(obj);
+  }
   canvas.renderAll();
 }
 
@@ -263,6 +343,12 @@ export function syncCanvasToPage(canvas: Canvas, page: Page): Page {
       if (typeof obj.fill === 'string') {
         next.fill = obj.fill;
       }
+      if (typeof obj.stroke === 'string') {
+        next.stroke = obj.stroke;
+      }
+      if (typeof obj.strokeWidth === 'number') {
+        next.strokeWidth = obj.strokeWidth;
+      }
     } else if (base.kind === 'text') {
       const tb = obj as Textbox;
       next.text = tb.text ?? base.text;
@@ -272,13 +358,16 @@ export function syncCanvasToPage(canvas: Canvas, page: Page): Page {
       next.fontFamily = tb.fontFamily ?? base.fontFamily;
       next.fontSize = tb.fontSize ?? base.fontSize;
       next.fontWeight = String(tb.fontWeight ?? base.fontWeight ?? '400');
+      next.lineHeight = tb.lineHeight ?? base.lineHeight;
+      next.letterSpacing = tb.charSpacing ?? base.letterSpacing;
+      next.textAlign = tb.textAlign ?? base.textAlign;
       if (typeof tb.fill === 'string') {
         next.fill = tb.fill;
       }
     } else if (base.kind === 'image') {
       const renderedW = obj.getScaledWidth();
       const renderedH = obj.getScaledHeight();
-      if (base.objectFit !== 'contain' && renderedW > 0 && renderedH > 0) {
+      if (renderedW > 0 && renderedH > 0) {
         next.width = Math.round(renderedW * 100) / 100;
         next.height = Math.round(renderedH * 100) / 100;
         next.scaleX = 1;
@@ -334,4 +423,97 @@ export function exportCanvasDataUrl(
     }
     canvas.renderAll();
   }
+}
+
+export async function renderPageOffscreenDataUrl(
+  page: Page,
+  workspaceWidth: number,
+  workspaceHeight: number,
+  format: 'png' | 'jpg',
+  multiplier: number
+): Promise<string> {
+  const offCanvasEl = document.createElement('canvas');
+  offCanvasEl.width = workspaceWidth;
+  offCanvasEl.height = workspaceHeight;
+  const offCanvas = new Canvas(offCanvasEl, {
+    width: workspaceWidth,
+    height: workspaceHeight,
+    preserveObjectStacking: true,
+    selection: false
+  });
+  try {
+    await renderPageToCanvas(offCanvas, page);
+    return offCanvas.toDataURL({
+      format: format === 'jpg' ? 'jpeg' : 'png',
+      quality: format === 'jpg' ? 0.92 : 1,
+      multiplier,
+      enableRetinaScaling: false
+    });
+  } finally {
+    await offCanvas.dispose();
+  }
+}
+
+export async function renderPageSnapshotWithAnnotationsDataUrl(
+  canvas: Canvas,
+  workspaceWidth: number,
+  workspaceHeight: number,
+  annotations: AgentAnnotation[] = []
+): Promise<string> {
+  const baseUrl = exportCanvasDataUrl(canvas, 'png', 1, workspaceWidth, workspaceHeight);
+  const unresolved = annotations.filter((a) => !a.resolved);
+  if (unresolved.length === 0) {
+    return baseUrl;
+  }
+
+  return new Promise<string>((resolve) => {
+    const img = new Image();
+    img.onload = () => {
+      const snapCanvas = document.createElement('canvas');
+      snapCanvas.width = workspaceWidth;
+      snapCanvas.height = workspaceHeight;
+      const ctx = snapCanvas.getContext('2d');
+      if (!ctx) {
+        resolve(baseUrl);
+        return;
+      }
+      ctx.drawImage(img, 0, 0, workspaceWidth, workspaceHeight);
+
+      unresolved.forEach((mark, idx) => {
+        const label = `#${idx + 1}`;
+        ctx.save();
+        ctx.strokeStyle = mark.color || '#D9531E';
+        ctx.fillStyle = mark.color || '#D9531E';
+        ctx.lineWidth = 3;
+        if (mark.kind === 'rect') {
+          const w = Math.max(24, mark.width ?? 80);
+          const h = Math.max(24, mark.height ?? 60);
+          ctx.setLineDash([7, 4]);
+          ctx.strokeRect(mark.x, mark.y, w, h);
+          ctx.setLineDash([]);
+          ctx.fillRect(mark.x, Math.max(0, mark.y - 20), 32, 20);
+          ctx.fillStyle = '#FFFFFF';
+          ctx.font = 'bold 12px sans-serif';
+          ctx.fillText(label, mark.x + 6, Math.max(14, mark.y - 6));
+        } else {
+          ctx.beginPath();
+          ctx.arc(mark.x, mark.y, 13, 0, Math.PI * 2);
+          ctx.fill();
+          ctx.strokeStyle = '#FFFFFF';
+          ctx.lineWidth = 2;
+          ctx.stroke();
+          ctx.fillStyle = '#FFFFFF';
+          ctx.font = 'bold 11px sans-serif';
+          ctx.textAlign = 'center';
+          ctx.textBaseline = 'middle';
+          ctx.fillText(label, mark.x, mark.y);
+        }
+        ctx.restore();
+      });
+
+      resolve(snapCanvas.toDataURL('image/png'));
+    };
+    img.onerror = () => resolve(baseUrl);
+    img.src = baseUrl;
+  });
 }

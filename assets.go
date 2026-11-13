@@ -6,3 +6,8 @@ import "embed"
 //
 //go:embed all:frontend/dist
 var FrontendDist embed.FS
+
+// AppIcon embeds the application PNG icon for desktop/window integration.
+//
+//go:embed assets/appicon.png
+var AppIcon []byte

@@ -29,10 +29,11 @@
     onRefresh: () => Promise<void>;
     onOpenFolder: (scope: 'library' | 'asset_dir' | 'creative_base', assetId?: string) => Promise<void>;
     onOpenInEditor: (documentId: string) => Promise<void>;
+    onOpenAssetInEditor: (assetId: string, format: 'feed' | 'story') => Promise<void>;
     onNotify: (msg: string) => void;
   }
 
-  let { overview, loading, onRefresh, onOpenFolder, onOpenInEditor, onNotify }: Props = $props();
+  let { overview, loading, onRefresh, onOpenFolder, onOpenInEditor, onOpenAssetInEditor, onNotify }: Props = $props();
 
   type SubTab = 'assets' | 'offers' | 'history';
   let subTab = $state<SubTab>('assets');
@@ -234,7 +235,16 @@
               {#if selectedAsset.isEditableModel && selectedAsset.linkedDocumentId}
                 <button class="primary" onclick={() => onOpenInEditor(selectedAsset.linkedDocumentId)}>
                   <Pencil size={14} />
-                  Abrir no Editor
+                  Abrir modelo no Editor
+                </button>
+              {:else if selectedAsset.mediaKind === 'image'}
+                <button
+                  class="primary"
+                  onclick={() =>
+                    onOpenAssetInEditor(selectedAsset.id, selectedAsset.format === 'story' ? 'story' : 'feed')}
+                >
+                  <Pencil size={14} />
+                  Abrir imagem no Editor
                 </button>
               {/if}
             </div>
